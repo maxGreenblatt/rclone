@@ -80,6 +80,20 @@ names, or for debugging purposes.`,
 			Default:  false,
 			Hide:     fs.OptionHideConfigurator,
 			Advanced: true,
+		}, {
+			Name:    "data_encryption",
+			Help:    "Option to either encrypt file data or leave them unencrypted.",
+			Default: true,
+			Examples: []fs.OptionExample{
+				{
+					Value: "true",
+					Help:  "Encrypt file data.",
+				},
+				{
+					Value: "false",
+					Help:  "Don't encrypt file data, leave them unencrypted.",
+				},
+			},
 		}},
 	})
 }
@@ -194,6 +208,7 @@ type Options struct {
 	Remote                  string `config:"remote"`
 	FilenameEncryption      string `config:"filename_encryption"`
 	DirectoryNameEncryption bool   `config:"directory_name_encryption"`
+	DataEncryption          bool   `config:"data_encryption"`
 	Password                string `config:"password"`
 	Password2               string `config:"password2"`
 	ShowMapping             bool   `config:"show_mapping"`
@@ -329,10 +344,15 @@ type putFn func(in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.O
 
 // put implements Put or PutStream
 func (f *Fs) put(in io.Reader, src fs.ObjectInfo, options []fs.OpenOption, put putFn) (fs.Object, error) {
-	// Encrypt the data into wrappedIn
-	wrappedIn, err := f.cipher.EncryptData(in)
-	if err != nil {
-		return nil, err
+	wrappedIn := in
+	var err error
+
+	if f.opt.DataEncryption {
+		// Encrypt the data into wrappedIn
+		wrappedIn, err = f.cipher.EncryptData(in)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Find a hash the destination supports to compute a hash of
@@ -657,9 +677,13 @@ func (o *Object) Remote() string {
 
 // Size returns the size of the file
 func (o *Object) Size() int64 {
-	size, err := o.f.cipher.DecryptedSize(o.Object.Size())
-	if err != nil {
-		fs.Debugf(o, "Bad size for decrypt: %v", err)
+	size := o.Object.Size()
+	var err error
+	if o.f.opt.DataEncryption {
+		size, err = o.f.cipher.DecryptedSize(o.Object.Size())
+		if err != nil {
+			fs.Debugf(o, "Bad size for decrypt: %v", err)
+		}
 	}
 	return size
 }
@@ -690,22 +714,39 @@ func (o *Object) Open(options ...fs.OpenOption) (rc io.ReadCloser, err error) {
 			openOptions = append(openOptions, option)
 		}
 	}
-	rc, err = o.f.cipher.DecryptDataSeek(func(underlyingOffset, underlyingLimit int64) (io.ReadCloser, error) {
-		if underlyingOffset == 0 && underlyingLimit < 0 {
+	if o.f.opt.DataEncryption {
+		rc, err = o.f.cipher.DecryptDataSeek(func(underlyingOffset, underlyingLimit int64) (io.ReadCloser, error) {
+			if underlyingOffset == 0 && underlyingLimit < 0 {
+				// Open with no seek
+				return o.Object.Open(openOptions...)
+			}
+			// Open stream with a range of underlyingOffset, underlyingLimit
+			end := int64(-1)
+			if underlyingLimit >= 0 {
+				end = underlyingOffset + underlyingLimit - 1
+				if end >= o.Object.Size() {
+					end = -1
+				}
+			}
+			newOpenOptions := append(openOptions, &fs.RangeOption{Start: underlyingOffset, End: end})
+			return o.Object.Open(newOpenOptions...)
+		}, offset, limit)
+	} else {
+		if offset == 0 && limit < 0 {
 			// Open with no seek
 			return o.Object.Open(openOptions...)
 		}
-		// Open stream with a range of underlyingOffset, underlyingLimit
+		// Open stream with a range of offset, limit
 		end := int64(-1)
-		if underlyingLimit >= 0 {
-			end = underlyingOffset + underlyingLimit - 1
+		if limit >= 0 {
+			end = offset + limit - 1
 			if end >= o.Object.Size() {
 				end = -1
 			}
 		}
-		newOpenOptions := append(openOptions, &fs.RangeOption{Start: underlyingOffset, End: end})
+		newOpenOptions := append(openOptions, &fs.RangeOption{Start: offset, End: end})
 		return o.Object.Open(newOpenOptions...)
-	}, offset, limit)
+	}
 	if err != nil {
 		return nil, err
 	}

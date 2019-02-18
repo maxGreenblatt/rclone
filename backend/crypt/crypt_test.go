@@ -83,3 +83,24 @@ func TestObfuscate(t *testing.T) {
 		SkipBadWindowsCharacters: true,
 	})
 }
+
+// TestNoDataObfuscate runs integration tests against the remote
+func TestNoDataObfuscate(t *testing.T) {
+	if *fstest.RemoteName != "" {
+		t.Skip("Skipping as -remote set")
+	}
+	tempdir := filepath.Join(os.TempDir(), "rclone-crypt-test-obfuscate")
+	name := "TestCrypt3"
+	fstests.Run(t, &fstests.Opt{
+		RemoteName: name + ":",
+		NilObject:  (*crypt.Object)(nil),
+		ExtraConfig: []fstests.ExtraConfigItem{
+			{Name: name, Key: "type", Value: "crypt"},
+			{Name: name, Key: "remote", Value: tempdir},
+			{Name: name, Key: "password", Value: obscure.MustObscure("potato2")},
+			{Name: name, Key: "filename_encryption", Value: "obfuscate"},
+			{Name: name, Key: "data_encryption", Value: "false"},
+		},
+		SkipBadWindowsCharacters: true,
+	})
+}
